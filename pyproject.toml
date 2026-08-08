@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mobile-use"
+version = "0.1.0"
+description = "Android 端自然语言自动化 Agent — 复刻 browser-use 架构"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "uiautomator2>=3.0.0",
+    "pydantic>=2.0.0",
+    "loguru>=0.7.0",
+    "Pillow>=10.0.0",
+    "lxml>=5.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-mock>=3.14.0",
+    "ruff>=0.8.0",
+]
+mcp = [
+    "mcp>=1.0.0",
+    "httpx>=0.27.0",
+]
+llm = [
+    "langchain-core>=0.3.0",
+    "langchain-openai>=0.1.0",
+]
+all = [
+    "mobile-use[dev,mcp,llm]",
+]
+
+[project.scripts]
+mobile-use = "mobile_use.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mobile_use"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]

@@ -1,0 +1,9 @@
+# ---- 敏感信息 ----
+.env
+.claude.md
+.pytest_cache/
+.vscode/
+__pycache__
+
+# ---- Logs ----
+logs/
