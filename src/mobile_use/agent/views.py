@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -12,7 +13,15 @@ if TYPE_CHECKING:
     from mobile_use.action.base import ActionResult
     from mobile_use.state.device_state import DeviceState
 
-__all__ = ["AgentConfig", "AgentResult", "AgentStep"]
+__all__ = ["AgentConfig", "AgentResult", "AgentStep", "Task"]
+
+
+class Task(BaseModel):
+    """一个可执行的任务单元"""
+
+    id: str = Field(default_factory=lambda: uuid4().hex[:8], description="任务唯一标识")
+    name: str = Field(description="任务简短名称")
+    description: str = Field(description="任务详细描述，发送给 LLM 的自然语言指令")
 
 
 class AgentConfig(BaseModel):
@@ -20,10 +29,14 @@ class AgentConfig(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    task: str = Field(description="自然语言任务描述")
-    max_steps: int = Field(default=30, description="最大执行步数")
+    tasks: list[Task] = Field(default_factory=list, description="任务列表")
+    max_steps: int = Field(default=30, description="每个任务的最大执行步数")
     max_errors: int = Field(default=3, description="连续错误容忍次数")
+    max_repeated_actions: int = Field(
+        default=3, description="相同动作连续重复次数上限，达到后强制停止任务"
+    )
     use_vision: bool = Field(default=True, description="是否使用截图（多模态）")
+    include_xml: bool = Field(default=False, description="是否在提示词中附带 UI 层级原始 XML")
     system_prompt: str | None = Field(
         default=None, description="自定义 system prompt（为空则用默认模板）"
     )

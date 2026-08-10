@@ -4,6 +4,7 @@ from mobile_use.action.app import LaunchAppAction, StopAppAction
 from mobile_use.action.base import ActionModel, ActionResult
 from mobile_use.action.done import DoneAction
 from mobile_use.action.error import ErrorAction
+from mobile_use.action.find_and_tap import FindAndTapAction
 from mobile_use.action.input_text import ClearTextAction, InputTextAction
 from mobile_use.action.long_press import LongPressAction
 from mobile_use.action.navigation import BackAction, HomeAction, PressKeyAction
@@ -15,6 +16,7 @@ __all__ = [
     "ActionModel",
     "ActionResult",
     "TapAction",
+    "FindAndTapAction",
     "LongPressAction",
     "InputTextAction",
     "ClearTextAction",

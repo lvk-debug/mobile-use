@@ -90,14 +90,14 @@ class TestSwipeAction:
 
     def test_default_distance(self):
         a = SwipeAction(direction="down")
-        assert a.distance == 0.5
+        assert a.distance == 1.0
 
 
 class TestScrollAction:
     def test_basic(self):
         a = ScrollAction(direction="down")
         assert a.direction == "down"
-        assert a.distance == 0.5
+        assert a.distance == 2.0
 
 
 class TestNavigationActions:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
-from mobile_use.driver.device import AppInfo
+from mobile_use.driver.device import AppInfo, DeviceInfo
 from mobile_use.state.ui_hierarchy import UIElement
 
 __all__ = ["DeviceState"]
@@ -23,5 +23,6 @@ class DeviceState(BaseModel):
     ui_hierarchy_xml: str = ""  # 原始 XML，保留完整元素信息
     screenshot: bytes
     current_app: AppInfo
+    device_info: DeviceInfo = DeviceInfo(serial="")
     width: int = 0
     height: int = 0

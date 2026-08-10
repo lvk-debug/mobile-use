@@ -126,16 +126,31 @@ class LLMModel:
         """从文本中提取 JSON 字符串
 
         优先尝试 ```json 代码块，否则找第一个 { ... } 块。
+        括号匹配时正确跳过字符串内的大括号。
         """
         # 1. 尝试 markdown 代码块
         code_block = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
         if code_block:
             return code_block.group(1).strip()
 
-        # 2. 尝试提取 { ... } 块（支持嵌套）
+        # 2. 尝试提取 { ... } 块（支持嵌套，跳过字符串内的括号）
         depth = 0
         start = -1
+        in_string = False
+        escape_next = False
         for i, ch in enumerate(text):
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\":
+                if in_string:
+                    escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
             if ch == "{":
                 if depth == 0:
                     start = i
@@ -150,22 +165,55 @@ class LLMModel:
 
     @staticmethod
     def _try_repair_json(json_str: str) -> dict | None:
-        """尝试修复 LLM 输出的常见 JSON 错误（如 thinking 中的未转义引号）"""
-        # 修复 thinking 字段中的未转义引号：匹配 "thinking":"..." 到 ","action"
-        # 策略：找到 "thinking":" 和 ","action" 的位置，中间的内容作为 thinking 值
+        """尝试修复 LLM 输出的常见 JSON 错误（如 thinking 中的未转义引号、重复输出）"""
+
+        # 策略 1：修复 thinking 中未转义引号
+        repaired = LLMModel._repair_thinking_quotes(json_str)
+        if repaired is not None:
+            return repaired
+
+        # 策略 2：处理 LLM 重复输出（thinking 被拼接两次导致 action 断裂）
+        # 原文形如：{"thinking":"...完整...","action":[{"action...重复的thinking...","action":[...]]}
+        action_starts = list(re.finditer(r'"action"\s*:\s*\[', json_str))
+        if action_starts:
+            for match in reversed(action_starts):
+                arr_start = match.end() - 1
+                depth = 0
+                arr_end = -1
+                for i in range(arr_start, len(json_str)):
+                    if json_str[i] == "[":
+                        depth += 1
+                    elif json_str[i] == "]":
+                        depth -= 1
+                        if depth == 0:
+                            arr_end = i
+                            break
+                if arr_end < 0:
+                    continue
+                try:
+                    actions = json.loads(json_str[arr_start : arr_end + 1])
+                    before = json_str[: match.start()]
+                    thinking_m = re.search(r'"thinking"\s*:\s*"(.*?)"', before, re.DOTALL)
+                    if thinking_m:
+                        return {"thinking": thinking_m.group(1).replace('\\"', '"'), "action": actions}
+                except json.JSONDecodeError:
+                    continue
+
+        return None
+
+    @staticmethod
+    def _repair_thinking_quotes(json_str: str) -> dict | None:
+        """修复 thinking 字段中的未转义双引号"""
         m = re.search(r'"thinking"\s*:\s*"', json_str)
         if not m:
             return None
         start = m.end()
-        # 找到 ","action" 或 "},"action"
         action_marker = re.search(r'",\s*"action"', json_str[start:])
         if not action_marker:
             return None
         thinking_raw = json_str[start : start + action_marker.start()]
-        # 对 thinking 内容中的双引号进行转义
         thinking_escaped = thinking_raw.replace('"', '\\"')
-        # 重新组装 JSON
-        repaired = json_str[:start] + thinking_escaped + json_str[start + action_marker.start():]
+        repaired = json_str[:start] + thinking_escaped + json_str[start + action_marker.start() :]
         try:
             data = json.loads(repaired)
             if isinstance(data.get("action"), dict):
@@ -176,20 +224,46 @@ class LLMModel:
 
     @staticmethod
     def _regex_extract(raw_text: str) -> dict | None:
-        """当 JSON 解析完全失败时，用正则直接提取 thinking 和 action 字段"""
-        # 提取 thinking：匹配 "thinking":"..." 到 "action"
-        thinking_match = re.search(r'"thinking"\s*:\s*"(.*?)"\s*,\s*"action"', raw_text, re.DOTALL)
-        if not thinking_match:
-            return None
-        thinking = thinking_match.group(1).replace('\\"', '"')
+        """当 JSON 解析完全失败时，用正则直接提取 thinking 和 action 字段
 
-        # 提取 action 数组：找到 "action":[...] 的完整数组
-        action_match = re.search(r'"action"\s*:\s*(\[.*?\])\s*\}', raw_text, re.DOTALL)
-        if not action_match:
+        处理 LLM 常见的重复输出问题：thinking 文本被重复拼接导致 JSON 断裂。
+        策略：找到最后一个完整的 "action":[...] 块（用括号计数处理嵌套），再从其前面提取 thinking。
+        """
+        # 找最后一个 "action":[...] 块，用括号计数处理嵌套数组
+        action_matches = list(re.finditer(r'"action"\s*:\s*\[', raw_text))
+        if not action_matches:
             return None
-        try:
-            actions = json.loads(action_match.group(1))
-        except json.JSONDecodeError:
+
+        actions = None
+        for match in reversed(action_matches):
+            # 从 [ 后开始，用括号计数找到匹配的 ]
+            arr_start = match.end() - 1  # 指向 [
+            depth = 0
+            arr_end = -1
+            for i in range(arr_start, len(raw_text)):
+                if raw_text[i] == "[":
+                    depth += 1
+                elif raw_text[i] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        arr_end = i
+                        break
+            if arr_end < 0:
+                continue
+            try:
+                actions = json.loads(raw_text[arr_start : arr_end + 1])
+                break
+            except json.JSONDecodeError:
+                continue
+
+        if actions is None:
             return None
+
+        # 从 action 位置往前找最近的完整 "thinking":"..." 字段
+        before_action = raw_text[: action_matches[-1].start()]
+        thinking_matches = list(re.finditer(r'"thinking"\s*:\s*"(.*?)"', before_action, re.DOTALL))
+        if not thinking_matches:
+            return None
+        thinking = thinking_matches[-1].group(1).replace('\\"', '"')
 
         return {"thinking": thinking, "action": actions}

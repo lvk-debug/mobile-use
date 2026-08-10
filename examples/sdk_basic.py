@@ -16,11 +16,13 @@
 
 import asyncio, os
 import sys
+from pathlib import Path
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 from mobile_use import Agent, AgentConfig, ConnectionConfig, ConnectionManager
 
-load_dotenv()
+# .env 在 examples/ 目录下，相对于本文件定位
+load_dotenv(Path(__file__).parent / ".env")
 
 
 async def main(serial: str | None = None, task: str | None = None) -> None:
@@ -42,21 +44,19 @@ async def main(serial: str | None = None, task: str | None = None) -> None:
     try:
         # ── 2. 创建 LLM ─────────────────────────────────────────────────
         # 替换为你使用的 LLM，确保设置了对应的环境变量
-        model_id = os.getenv("LLM_MODEL_ID") or "glm-4.5-air"
+        model_id = os.getenv("LLM_MODEL_ID")
         if not model_id:
             print("[FAIL] 请设置环境变量 LLM_MODEL_ID（如 gpt-4o、deepseek-chat 等）")
             return
         llm = ChatOpenAI(
             model=model_id,
-            base_url=os.getenv("LLM_BASE_URL")
-            or "https://open.bigmodel.cn/api/paas/v4/",
-            api_key=os.getenv("LLM_API_KEY")
-            or "8e5bb68315724707ad9713321e5185d3.pbb9mUL9BA0CfjH8",
+            base_url=os.getenv("LLM_BASE_URL"),
+            api_key=os.getenv("LLM_API_KEY"),
             temperature=0,
         )
 
         # ── 3. 创建 Agent ────────────────────────────────────────────────
-        task = task or "查询下成都到拉萨的旅行攻略"
+        task = task or "在桌面左右滑动切换页面"
         agent = Agent(
             config=AgentConfig(
                 task=task,

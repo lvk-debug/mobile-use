@@ -9,6 +9,7 @@ from mobile_use.action.app import LaunchAppAction, StopAppAction
 from mobile_use.action.base import ActionModel, ActionResult
 from mobile_use.action.done import DoneAction
 from mobile_use.action.error import ErrorAction
+from mobile_use.action.find_and_tap import FindAndTapAction
 from mobile_use.action.input_text import ClearTextAction, InputTextAction
 from mobile_use.action.long_press import LongPressAction
 from mobile_use.action.navigation import BackAction, HomeAction, PressKeyAction
@@ -40,6 +41,70 @@ def register_default_actions(controller: Controller) -> None:
             await device.tap(params.x, params.y)
             return ActionResult(success=True, message=f"Tapped at ({params.x}, {params.y})")
         return ActionResult(success=False, message="Must provide either (x, y) or element_index")
+
+    # ── find_and_tap ───────────────────────────────────────────────────────
+
+    @controller.action(
+        "通过文本或属性查找元素并点击，找不到时自动滚动重试。"
+        "比 scroll+tap 组合更高效，推荐用于在长列表中定位目标",
+        name="find_and_tap",
+    )
+    async def find_and_tap(
+        params: FindAndTapAction, device: Device, state: DeviceState, ctrl: Controller
+    ) -> ActionResult:
+        if not params.text and not params.resource_id and not params.content_desc:
+            return ActionResult(
+                success=False,
+                message="必须指定 text / resource_id / content_desc 中的至少一个",
+            )
+
+        # 在当前 UI 树中查找
+        results = device._find_in_tree(
+            root=state.ui_hierarchy,
+            first_only=True,
+            text=params.text,
+            resource_id=params.resource_id,
+            content_desc=params.content_desc,
+        )
+        if results:
+            cx, cy = results[0].center
+            await device.tap(cx, cy)
+            return ActionResult(
+                success=True,
+                message=f"找到并点击 [{params.text or params.resource_id or params.content_desc}] at ({cx}, {cy})",
+            )
+
+        # 当前页面找不到，尝试滚动查找
+        for i in range(params.max_scrolls):
+            await device.swipe("up", 1.5)  # 向上滑 = 内容向下滚动
+            await asyncio.sleep(0.8)
+
+            # 重新获取 UI 树
+            new_hierarchy, _ = await device.get_ui_hierarchy()
+            results = device._find_in_tree(
+                root=new_hierarchy,
+                first_only=True,
+                text=params.text,
+                resource_id=params.resource_id,
+                content_desc=params.content_desc,
+            )
+            if results:
+                cx, cy = results[0].center
+                await device.tap(cx, cy)
+                return ActionResult(
+                    success=True,
+                    message=(
+                        f"滚动 {i + 1} 次后找到并点击 "
+                        f"[{params.text or params.resource_id or params.content_desc}] at ({cx}, {cy})"
+                    ),
+                )
+
+        target = params.text or params.resource_id or params.content_desc
+        return ActionResult(
+            success=False,
+            message=f"滚动 {params.max_scrolls} 次后仍未找到 [{target}]，"
+            "请尝试其他方式（如搜索框、返回上级菜单等）",
+        )
 
     # ── long_press ─────────────────────────────────────────────────────────
 

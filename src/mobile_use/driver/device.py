@@ -272,13 +272,15 @@ class Device:
             self.screenshot() if use_vision else self._empty_screenshot(),
             self.current_app(),
             self.window_size(),
+            self.info(),
         ]
-        (hierarchy, hierarchy_xml), screenshot_bytes, app_info, (width, height) = await asyncio.gather(*tasks)
+        (hierarchy, hierarchy_xml), screenshot_bytes, app_info, (width, height), dev_info = await asyncio.gather(*tasks)
         return DeviceState(
             ui_hierarchy=hierarchy,
             ui_hierarchy_xml=hierarchy_xml,
             screenshot=screenshot_bytes,
             current_app=app_info,
+            device_info=dev_info,
             width=width,
             height=height,
         )

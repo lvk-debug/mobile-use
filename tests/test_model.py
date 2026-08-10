@@ -97,10 +97,11 @@ class TestParseResponse:
             LLMModel.parse_response("这不是 JSON 也没有大括号")
 
     def test_json_with_trailing_comma(self):
-        """带尾逗号的 JSON 应该报错（标准 JSON 不支持）"""
+        """带尾逗号的 JSON 应被自动修复（LLM 常见输出）"""
         raw = '{"thinking": "test", "action": [],}'
-        with pytest.raises(ValueError):
-            LLMModel.parse_response(raw)
+        output = LLMModel.parse_response(raw)
+        assert output.thinking == "test"
+        assert output.action == []
 
 
 class TestJSONRepair:
@@ -140,6 +141,29 @@ class TestJSONRepair:
         # 这个能被 _extract_json 提取出来，正常解析
         output = LLMModel.parse_response(raw)
         assert output.action[0]["action_name"] == "tap"
+
+    def test_llm_repeated_output_truncated_action(self):
+        """LLM 重复输出 thinking 导致 action 被截断后重复
+
+        实际 LLM 输出格式：
+        {"thinking":"...完整内容...","action":[{"action...重复的thinking...","action":[...有效action...]]}
+        thinking 正常闭合，但 action 数组内嵌入了重复的 thinking 文本，尾部才出现有效 action。
+        """
+        thinking_text = (
+            "我看到当前页面仍然显示的是西藏旅游的页面，URL栏中显示的是一个很长的URL。"
+            "我需要清空URL栏，然后重新输入搜索关键词'成都到拉萨旅行攻略'。"
+            "我看到有一个清除按钮 [4]，我应该先点击它来清空当前内容。"
+        )
+        raw = (
+            '{"thinking":"' + thinking_text + '",'
+            '"action":[{"action' + thinking_text + '",'
+            '"action":[{"action_name":"tap","params":{"element_index":4}}]}'
+            "]}"
+        )
+        output = LLMModel.parse_response(raw)
+        assert output.action[0]["action_name"] == "tap"
+        assert output.action[0]["params"]["element_index"] == 4
+        assert "西藏旅游" in output.thinking
 
 
 class TestLLMModelTokens:

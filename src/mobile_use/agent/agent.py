@@ -8,10 +8,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from langchain_core.messages import HumanMessage
 from loguru import logger
 
 from mobile_use.agent.prompts import build_prompt
-from mobile_use.agent.views import AgentConfig, AgentResult, AgentStep
+from mobile_use.agent.views import AgentConfig, AgentResult, AgentStep, Task
 from mobile_use.controller.controller import Controller
 from mobile_use.model.model import AgentOutput, LLMModel
 from mobile_use.utils.dialog_detector import detect人工介入弹窗
@@ -32,11 +33,11 @@ class Agent:
         from langchain_openai import ChatOpenAI
 
         agent = Agent(
-            config=AgentConfig(task="打开设置", max_steps=10),
+            config=AgentConfig(tasks=[Task(name="打开设置", description="打开系统设置")], max_steps=10),
             llm=ChatOpenAI(model="gpt-4o"),
             device=device,
         )
-        result = await agent.run()
+        results = await agent.run()
     """
 
     def __init__(
@@ -51,6 +52,7 @@ class Agent:
         self._llm_model = LLMModel(llm)
         self._controller = controller or Controller()
         self._log_fh = None
+        self._task_queue: list[Task] = list(config.tasks)
 
         if config.log_file:
             log_path = Path(config.log_file)
@@ -62,10 +64,11 @@ class Agent:
                 # 传了目录，自动生成唯一文件名
                 log_path.mkdir(parents=True, exist_ok=True)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                task_slug = self._slugify(config.task, max_len=40)
+                task_names = "+".join(t.name for t in config.tasks[:3]) or "task"
+                task_slug = self._slugify(task_names, max_len=40)
                 log_file = log_path / f"{task_slug}_{ts}.log"
             self._log_fh = open(log_file, "w", encoding="utf-8")
-            self._log_fh.write(f"Task: {config.task}\n")
+            self._log_fh.write(f"Tasks: {[t.name for t in config.tasks]}\n")
             self._log_fh.write(f"Time: {datetime.now().isoformat()}\n")
             self._log_fh.write(f"Log:  {log_file}\n")
             self._log_fh.write(f"{'═' * 60}\n\n")
@@ -78,6 +81,15 @@ class Agent:
     @property
     def llm_model(self) -> LLMModel:
         return self._llm_model
+
+    def add_task(self, task: Task) -> None:
+        """追加任务到队列尾部，下次 run() 时按顺序执行。
+
+        Args:
+            task: 任务对象
+        """
+        self._task_queue.append(task)
+        logger.info("任务已加入队列: [{}] {}", task.id, task.name)
 
     @staticmethod
     def _slugify(text: str, max_len: int = 40) -> str:
@@ -189,11 +201,43 @@ class Agent:
             self._log_fh.close()
             self._log_fh = None
 
-    async def run(self) -> AgentResult:
-        """执行主循环：获取状态 → 构造 prompt → 调用 LLM → 解析动作 → 执行 → 重复
+    async def run(self) -> list[AgentResult]:
+        """按顺序执行任务队列中所有任务。
+
+        每个任务独立运行 observe→think→act 循环。某个任务失败后停止后续任务（fail-fast）。
 
         Returns:
-            AgentResult 执行结果
+            每个任务的执行结果列表
+        """
+        results: list[AgentResult] = []
+
+        while self._task_queue:
+            task = self._task_queue.pop(0)
+            logger.info("开始执行任务: [{}] {}", task.id, task.name)
+            result = await self._run_single(task)
+            results.append(result)
+
+            if not result.success:
+                logger.warning("任务 [{}] {} 失败，停止后续任务", task.id, task.name)
+                break
+
+        return results
+
+    @staticmethod
+    def _action_fingerprint(name: str, params: dict) -> str:
+        """生成动作指纹，用于重复检测"""
+        import json
+
+        return f"{name}({json.dumps(params, sort_keys=True, ensure_ascii=False)})"
+
+    async def _run_single(self, task: Task) -> AgentResult:
+        """执行单个任务的 observe→think→act 循环。
+
+        Args:
+            task: 要执行的任务
+
+        Returns:
+            该任务的执行结果
         """
         start_time = time.time()
         steps: list[AgentStep] = []
@@ -202,7 +246,11 @@ class Agent:
         success = False
         error_msg: str | None = None
 
-        logger.info("Agent started: task={!r}, max_steps={}", self._config.task, self._config.max_steps)
+        # 重复动作检测状态
+        last_action_fp: str | None = None
+        repeat_count = 0
+
+        logger.info("Task started: [{}] {!r}, max_steps={}", task.id, task.description, self._config.max_steps)
 
         try:
             for step_num in range(1, self._config.max_steps + 1):
@@ -239,13 +287,25 @@ class Agent:
                 # 2. 构造 prompt
                 action_descs = self._controller.get_action_descriptions()
                 messages = build_prompt(
-                    task=self._config.task,
+                    task=task,
                     state=state,
                     history=steps,
                     action_descriptions=action_descs,
                     use_vision=self._config.use_vision,
+                    include_xml=self._config.include_xml,
                     custom_system_prompt=self._config.system_prompt,
                 )
+
+                # 2.5 重复动作检测 — 向 LLM 注入警告
+                if last_action_fp and repeat_count >= 2:
+                    warn = (
+                        f"⚠️ 你已经连续 {repeat_count} 次执行完全相同的动作 "
+                        f"[{last_action_fp}]，但界面没有任何变化。"
+                        "这说明该动作无效，请立即换一种不同的策略！"
+                        "如果确实找不到目标元素，使用 done 说明原因并结束任务。"
+                    )
+                    messages.append(HumanMessage(content=warn))
+                    logger.warning("重复动作检测: {} 连续 {} 次", last_action_fp, repeat_count)
 
                 # 记录 LLM 上下文到日志
                 self._log_messages(messages)
@@ -258,11 +318,12 @@ class Agent:
                         logger.warning("LLM with vision failed, retrying without vision: {}", e)
                         try:
                             messages = build_prompt(
-                                task=self._config.task,
+                                task=task,
                                 state=state,
                                 history=steps,
                                 action_descriptions=action_descs,
                                 use_vision=False,
+                                include_xml=self._config.include_xml,
                                 custom_system_prompt=self._config.system_prompt,
                             )
                             agent_output = await self._llm_model.invoke(messages)
@@ -288,7 +349,6 @@ class Agent:
                 # 4. 检查动作列表是否为空
                 if not agent_output.action:
                     logger.warning("LLM returned empty action list, injecting wait action")
-                    # 记录一步以避免 history 不增长导致无限循环
                     from mobile_use.action.base import ActionResult as _AR
 
                     step = AgentStep(
@@ -354,8 +414,25 @@ class Agent:
                     if action_name == "error":
                         logger.warning("Agent reported error: {}", result.message)
 
+                    # 更新重复动作计数
+                    fp = self._action_fingerprint(action_name, action_params)
+                    if fp == last_action_fp:
+                        repeat_count += 1
+                    else:
+                        last_action_fp = fp
+                        repeat_count = 1
+
                 # 如果 done 了就退出外层循环
                 if success:
+                    break
+
+                # 重复动作超限 → 强制停止
+                if repeat_count >= self._config.max_repeated_actions:
+                    error_msg = (
+                        f"连续 {repeat_count} 次执行相同动作 [{last_action_fp}]，"
+                        f"界面无变化，判定为无效循环，强制停止"
+                    )
+                    logger.warning(error_msg)
                     break
 
                 # 连续错误检查
@@ -372,14 +449,14 @@ class Agent:
             error_msg = f"Agent crashed: {e}"
 
         duration = time.time() - start_time
-        logger.info("Agent finished: success={}, steps={}, duration={:.1f}s", success, len(steps), duration)
+        logger.info("Task finished: [{}] success={}, steps={}, duration={:.1f}s", task.id, success, len(steps), duration)
 
         # 写入日志总结并关闭文件
         self._log_summary(success, len(steps), duration, final_answer, error_msg)
         self.close()
 
         return AgentResult(
-            task=self._config.task,
+            task=task.name,
             success=success,
             steps=steps,
             final_answer=final_answer,
